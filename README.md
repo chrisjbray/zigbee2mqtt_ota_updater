@@ -32,7 +32,7 @@ You can configure the updater via CLI arguments or environment variables. CLI ar
 
 | Argument | Environment Variable | Default | Description |
 |----------|----------------------|---------|-------------|
-| `--host` | `MQTT_SERVER` | `127.0.0.1` | MQTT Broker hostname or IP. |
+| `--host` | `MQTT_HOST` | `127.0.0.1` | MQTT Broker hostname or IP. |
 | `--port` | `MQTT_PORT` | `1883` | MQTT Broker port. |
 | `--user` | `MQTT_USER` | (None) | MQTT Username. |
 | `--password` | `MQTT_PASSWORD` | (None) | MQTT Password. |
@@ -52,11 +52,13 @@ Run the updater with your broker details:
 ### Advanced Examples
 
 **Run with 2 concurrent updates and a 10-minute progress timeout:**
+
 ```bash
 ../venv/bin/python main.py --host <broker_ip> --max-concurrent 2 --timeout 600
 ```
 
 **Dry run to see what needs updating:**
+
 ```bash
 ../venv/bin/python main.py --host <broker_ip> --dry-run
 ```
