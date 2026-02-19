@@ -3,6 +3,7 @@ import argparse
 import json
 import logging
 import os
+import random
 import sys
 import time
 from dataclasses import dataclass, field
@@ -49,6 +50,11 @@ parser.add_argument(
 )
 parser.add_argument(
     "--dry-run", action="store_true", help="Check for updates but do not install"
+)
+parser.add_argument(
+    "--shuffle",
+    action="store_true",
+    help="Shuffle the order of updates once the list is made",
 )
 args = parser.parse_args()
 
@@ -175,14 +181,18 @@ def update_progress(device_fn, update_data):
 
         if state == "idle":
             r = [
-                d for d in otadict.values() if d.updating and d.friendly_name == device_fn
+                d
+                for d in otadict.values()
+                if d.updating and d.friendly_name == device_fn
             ]
             if r:
                 otacleanup(client, r[0])
         elif state == "updating":
             # Ensure we have a heartbeat for starting
             res = [
-                d for d in otadict.values() if d.updating and d.friendly_name == device_fn
+                d
+                for d in otadict.values()
+                if d.updating and d.friendly_name == device_fn
             ]
             if res:
                 res[0].last_progress = time.time()
@@ -473,6 +483,8 @@ try:
                 handle_failed_update(client, dev)
 
         updateable = get_updateable_devices()
+        if args.shuffle:
+            random.shuffle(updateable)
 
         if init_done_event.is_set() and not updateable and not currently_updating:
             break

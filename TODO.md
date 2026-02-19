@@ -6,3 +6,4 @@
 - [x] Strictly enforce concurrency limits
 - [x] Add watchdog and retry logic
 - [x] Setup project tracking and infrastructure
+- [x] Add `--shuffle` argument to randomize update order
