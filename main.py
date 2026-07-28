@@ -1,3 +1,21 @@
+
+from datetime import datetime, timezone
+
+def is_online(ieee_addr, max_offline_seconds=43200):
+    try:
+        with open("/data/config/z2m/data/state.json") as f:
+            st = json.load(f)
+        dev_st = st.get(ieee_addr, {})
+        last_seen = dev_st.get("last_seen")
+        if not last_seen:
+            return False
+        dt = datetime.fromisoformat(last_seen)
+        now = datetime.now(timezone.utc)
+        return (now - dt).total_seconds() < max_offline_seconds
+    except Exception as e:
+        logger.debug(f"Error checking online status for {ieee_addr}: {e}")
+        return True
+
 #!/usr/bin/env python3
 import argparse
 import json
@@ -217,6 +235,9 @@ def handle_devicelist(client, devicelist):
             )
 
             if dev.supports_ota:
+                if not is_online(dev.ieee_addr):
+                    logger.warning(f"  Skipping {dev.friendly_name} (OFFLINE: last seen > 12h ago)")
+                    continue
                 # Detect existing update states from the 'update' object
                 already_handled = False
                 if "update" in device:
