@@ -541,7 +541,9 @@ try:
             random.shuffle(updateable)
 
         if init_done_event.is_set() and not updateable and not currently_updating:
-            break
+            logger.info("No active updates in queue. Waiting 30s for next available device...")
+            sleep(30)
+            continue
 
         # Strictly respect the limit
         current_count = len(currently_updating)
