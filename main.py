@@ -424,6 +424,22 @@ def otacleanup(client, dev: OtaDevice):
     if dev.ieee_addr in currently_updating:
         currently_updating.remove(dev.ieee_addr)
     logger.info(
+        f"Post-update: Triggering ZCL re-configuration & cache update for {dev.friendly_name}..."
+    )
+    try:
+        client.publish(
+            "zigbee2mqtt/bridge/request/device/configure",
+            payload=json.dumps({"id": dev.ieee_addr}),
+        )
+        sleep(5)
+        client.publish(
+            "zigbee2mqtt/bridge/request/device/ota_update/check",
+            payload=json.dumps({"id": dev.ieee_addr}),
+        )
+    except Exception as e:
+        logger.warning(f"Failed to trigger post-update cache refresh for {dev.friendly_name}: {e}")
+
+    logger.info(
         f"Update for {dev.friendly_name} finished - {len(get_updateable_devices())} more updates to go. Cooling network for 30s..."
     )
     client.unsubscribe(f"zigbee2mqtt/{dev.friendly_name}")

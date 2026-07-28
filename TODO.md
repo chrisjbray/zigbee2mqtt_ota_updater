@@ -10,3 +10,4 @@
 - [x] Add pre-flight mesh stabilization delay and post-update cooling period
 - [x] Filter out offline devices before checking for updates
 - [x] Add --max-offline-hours CLI argument (defaults to 1.0 hour)
+- [x] Add post-update ZCL re-configuration and cache refresh in otacleanup()
