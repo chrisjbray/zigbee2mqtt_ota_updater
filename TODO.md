@@ -7,3 +7,4 @@
 - [x] Add watchdog and retry logic
 - [x] Setup project tracking and infrastructure
 - [x] Add `--shuffle` argument to randomize update order
+- [x] Add pre-flight mesh stabilization delay and post-update cooling period

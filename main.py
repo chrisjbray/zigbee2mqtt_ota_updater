@@ -393,9 +393,10 @@ def otacleanup(client, dev: OtaDevice):
     if dev.ieee_addr in currently_updating:
         currently_updating.remove(dev.ieee_addr)
     logger.info(
-        f"Update for {dev.friendly_name} finished - {len(get_updateable_devices())} more updates to go"
+        f"Update for {dev.friendly_name} finished - {len(get_updateable_devices())} more updates to go. Cooling network for 30s..."
     )
     client.unsubscribe(f"zigbee2mqtt/{dev.friendly_name}")
+    sleep(30)
 
 
 def check_for_update(client, device: OtaDevice):
@@ -414,6 +415,12 @@ def start_update(client, device: OtaDevice):
         logger.info(f"[DRY-RUN] Would start update for {device.friendly_name}")
         device.update_available = False
         return
+
+    logger.info(f"Pre-flight: Stabilizing mesh for 15s before updating {device.friendly_name}...")
+    sleep(15)
+    # Warm up mesh route by requesting state
+    client.publish(f"zigbee2mqtt/{device.friendly_name}/get", payload=json.dumps({"state": ""}))
+    sleep(5)
 
     logger.info(f"Starting Update for {device.friendly_name}")
     client.subscribe(f"zigbee2mqtt/{device.friendly_name}")
@@ -494,7 +501,7 @@ try:
         if updateable and current_count < MAX_CONCURRENT_UPDATES:
             device = updateable.pop(0)
             start_update(client, device)
-            sleep(10)
+            sleep(30)
         elif updateable and current_count >= MAX_CONCURRENT_UPDATES:
             logger.debug(
                 f"Update queue full ({current_count}/{MAX_CONCURRENT_UPDATES}). Waiting..."
