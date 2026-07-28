@@ -125,6 +125,7 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe("zigbee2mqtt/bridge/devices")
         client.subscribe("zigbee2mqtt/bridge/response/device/ota_update/check")
         client.subscribe("zigbee2mqtt/bridge/response/device/ota_update/update")
+        client.subscribe("zigbee2mqtt/+")
         # Ensure we're subscribed to all devices we already know about
         for dev in otadict.values():
             if dev.updating:

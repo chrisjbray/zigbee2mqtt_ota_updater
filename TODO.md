@@ -12,3 +12,4 @@
 - [x] Add --max-offline-hours CLI argument (defaults to 1.0 hour)
 - [x] Add post-update ZCL re-configuration and cache refresh in otacleanup()
 - [x] Make main loop run continuously as a daemon instead of exiting when queue is temporarily empty
+- [x] Subscribe to wildcard device topic zigbee2mqtt/+ to capture all device progress updates
