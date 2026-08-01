@@ -79,6 +79,10 @@ def is_online(ieee_addr):
         if not last_seen:
             return False
         dt = datetime.fromisoformat(last_seen)
+        if dt.tzinfo is None:
+            # advanced.last_seen is ISO_8601_local in this deployment, so a
+            # naive timestamp here means local system time, not UTC.
+            dt = dt.astimezone()
         now = datetime.now(timezone.utc)
         return (now - dt).total_seconds() < max_offline_seconds
     except Exception as e:
@@ -99,6 +103,7 @@ MAX_CONCURRENT_UPDATES = args.max_concurrent
 # Global State
 otadict = {}
 currently_updating = []
+cooldown_until = 0
 sent_request = []
 init_done_event = Event()
 nicer_output_flag = False
@@ -117,6 +122,12 @@ class OtaDevice:
     last_progress: float = 0
     retries: int = 0
     failed: bool = False
+    last_state: str = 'unknown'
+    manufacturer: str = ""
+
+    @property
+    def is_inovelli(self) -> bool:
+        return "inovelli" in self.manufacturer.lower()
 
 
 def on_connect(client, userdata, flags, rc):
@@ -187,26 +198,34 @@ def update_progress(device_fn, update_data):
     remaining = update_data.get("remaining")
 
     if progress is not None:
-        try:
-            msg = f"Updating {device_fn} - {float(progress):6.2f}%"
-            if remaining is not None:
-                remaining_time = timedelta(seconds=int(remaining))
-                msg += f", {remaining_time} remaining"
-            logger.info(msg)
-        except (ValueError, TypeError):
-            logger.debug(
-                f"Could not format progress data for {device_fn}: {update_data}"
-            )
-
-        # Update heartbeat
         res = [
             d for d in otadict.values() if d.updating and d.friendly_name == device_fn
         ]
         if res:
-            res[0].last_progress = time.time()
+            dev = res[0]
+            dev.last_progress = time.time()
+            current_p = float(progress)
+            if abs(current_p - dev.last_progress_val if hasattr(dev, "last_progress_val") else -1) >= 0.01:
+                dev.last_progress_val = current_p
+                try:
+                    msg = f"Updating {device_fn} - {current_p:6.2f}%"
+                    if remaining is not None:
+                        remaining_time = timedelta(seconds=int(remaining))
+                        msg += f", {remaining_time} remaining"
+                    if current_p >= 100.0:
+                        msg += " (Awaiting switch reboot & verification)"
+                    logger.info(msg)
+                except (ValueError, TypeError):
+                    pass
 
-    elif state:
-        logger.info(f"Update status for {device_fn}: {state}")
+    if state:
+        res = [d for d in otadict.values() if d.friendly_name == device_fn]
+        if res:
+            dev = res[0]
+            if dev.last_state != state:
+                old_s = dev.last_state
+                dev.last_state = state
+                logger.info(f"Update status for {device_fn} {old_s} -> {state}")
 
         if state == "idle":
             r = [
@@ -217,7 +236,6 @@ def update_progress(device_fn, update_data):
             if r:
                 otacleanup(client, r[0])
         elif state == "updating":
-            # Ensure we have a heartbeat for starting
             res = [
                 d
                 for d in otadict.values()
@@ -243,13 +261,16 @@ def handle_devicelist(client, devicelist):
                 ieee_addr=device["ieee_address"],
                 supports_ota=device["definition"]["supports_ota"],
                 update_available=raw_update_available,
+                manufacturer=device["definition"].get("vendor", ""),
             )
 
             if dev.supports_ota:
-                if not is_online(dev.ieee_addr):
-                    logger.warning(f"  Skipping {dev.friendly_name} (OFFLINE: last seen > {args.max_offline_hours}h ago)")
-                    continue
-                # Detect existing update states from the 'update' object
+                # Detect existing update state FIRST, straight from data z2m
+                # has already published - no new query is sent, so this is
+                # safe regardless of last_seen. OTA block-transfer traffic
+                # never refreshes last_seen, so a transfer running past
+                # --max-offline-hours would otherwise look "offline" here
+                # and get silently dropped from tracking entirely.
                 already_handled = False
                 if "update" in device:
                     u_obj = device["update"]
@@ -260,13 +281,7 @@ def handle_devicelist(client, devicelist):
                         or (u_state == "available")
                     )
 
-                    if u_available:
-                        dev.update_available = True
-                        already_handled = True
-                        logger.info(
-                            f"  {dev.friendly_name} has an update available (from update object)."
-                        )
-                    elif u_state == "updating":
+                    if u_state == "updating":
                         dev.updating = True
                         dev.update_available = True
                         already_handled = True
@@ -279,6 +294,22 @@ def handle_devicelist(client, devicelist):
                             f"  {dev.friendly_name} is already updating. Subscribed to {topic}"
                         )
                         dev.last_progress = time.time()
+                    elif u_available:
+                        dev.update_available = True
+                        already_handled = True
+                        logger.info(
+                            f"  {dev.friendly_name} has an update available (from update object)."
+                        )
+
+                # Only devices that still need a fresh OTA check go through
+                # the offline gate - that's the only path that sends a live
+                # query to the device, and querying a genuinely unresponsive
+                # device risks an unfulfilled promise in z2m that can crash
+                # (and restart) the whole z2m process, dropping every other
+                # in-flight transfer with it.
+                if not already_handled and not is_online(dev.ieee_addr):
+                    logger.warning(f"  Skipping {dev.friendly_name} (OFFLINE: last seen > {args.max_offline_hours}h ago)")
+                    continue
 
                 otadict[dev.ieee_addr] = dev
                 num_total += 1
@@ -288,9 +319,8 @@ def handle_devicelist(client, devicelist):
                     )
                 else:
                     logger.info(
-                        f"  {dev.friendly_name} supports OTA Updates, checking for new updates"
+                        f"  {dev.friendly_name} supports OTA Updates (added to queue)"
                     )
-                    check_for_update(client, dev)
 
     if num_total == 0 or not sent_request:
         logger.info("No OTA-supported devices found (or all already checked).")
@@ -377,12 +407,33 @@ def handle_otacheck(client, obj):
 def handle_otasuccess(client, obj):
     global otadict
     if obj.get("status") == "error":
-        ieee = obj.get("data", {}).get("id")
-        logger.error(f"Update error for {ieee}: {obj.get('error')}")
-        if ieee and ieee in otadict:
-            handle_failed_update(client, otadict[ieee])
+        data = obj.get("data")
+        ieee = data.get("id") if isinstance(data, dict) else None
+        if not ieee:
+            error_msg = str(obj.get("error", ""))
+            for marker in ["Update of '", "for '"]:
+                if marker in error_msg:
+                    try:
+                        ieee = error_msg.split(marker)[1].split("'")[0]
+                        break
+                    except IndexError:
+                        pass
+        logger.error(f"Update error for {ieee or 'unknown'}: {obj.get('error')}")
+        dev = None
+        if ieee:
+            res = [d for d in otadict.values() if d.friendly_name == ieee or d.ieee_addr == ieee]
+            if res:
+                dev = res[0]
+        if dev:
+            handle_failed_update(client, dev)
+        elif currently_updating:
+            logger.warning("Unmatched update error, clearing oldest active updating device.")
+            oldest_ieee = currently_updating[0]
+            if oldest_ieee in otadict:
+                handle_failed_update(client, otadict[oldest_ieee])
     else:
-        name = obj.get("data", {}).get("id")
+        data = obj.get("data")
+        name = data.get("id") if isinstance(data, dict) else None
         res = [
             d
             for d in otadict.values()
@@ -424,31 +475,36 @@ def otacleanup(client, dev: OtaDevice):
     dev.update_available = False
     if dev.ieee_addr in currently_updating:
         currently_updating.remove(dev.ieee_addr)
-    logger.info(
-        f"Post-update: Triggering ZCL re-configuration & cache update for {dev.friendly_name}..."
-    )
     try:
-        client.publish(
-            "zigbee2mqtt/bridge/request/device/configure",
-            payload=json.dumps({"id": dev.ieee_addr}),
-        )
-        sleep(5)
+        if dev.is_inovelli:
+            logger.info(
+                f"Post-update: Restoring periodicPowerAndEnergyReports=15 for {dev.friendly_name}..."
+            )
+            client.publish(
+                f"zigbee2mqtt/{dev.friendly_name}/set",
+                payload=json.dumps({"periodicPowerAndEnergyReports": 15}),
+            )
+            sleep(2)
         client.publish(
             "zigbee2mqtt/bridge/request/device/ota_update/check",
             payload=json.dumps({"id": dev.ieee_addr}),
         )
     except Exception as e:
-        logger.warning(f"Failed to trigger post-update cache refresh for {dev.friendly_name}: {e}")
+        logger.warning(f"Failed post-update restore/refresh for {dev.friendly_name}: {e}")
 
+    global cooldown_until
+    cooldown_until = time.time() + 30
     logger.info(
-        f"Update for {dev.friendly_name} finished - {len(get_updateable_devices())} more updates to go. Cooling network for 30s..."
+        f"Update for {dev.friendly_name} finished - {len(get_updateable_devices())} more updates to go. Network cooling down for 30s (non-blocking)..."
     )
     client.unsubscribe(f"zigbee2mqtt/{dev.friendly_name}")
-    sleep(30)
 
 
 def check_for_update(client, device: OtaDevice):
     global sent_request
+    if currently_updating:
+        logger.debug(f"Skipping update check for {device.friendly_name} while another device is updating.")
+        return
     client.publish(
         "zigbee2mqtt/bridge/request/device/ota_update/check",
         payload=json.dumps({"id": device.ieee_addr}),
@@ -464,11 +520,16 @@ def start_update(client, device: OtaDevice):
         device.update_available = False
         return
 
-    logger.info(f"Pre-flight: Stabilizing mesh for 15s before updating {device.friendly_name}...")
-    sleep(15)
-    # Warm up mesh route by requesting state
-    client.publish(f"zigbee2mqtt/{device.friendly_name}/get", payload=json.dumps({"state": ""}))
-    sleep(5)
+    if device.is_inovelli:
+        logger.info(f"Pre-flight: Setting periodicPowerAndEnergyReports=600 for {device.friendly_name}")
+        try:
+            client.publish(
+                f"zigbee2mqtt/{device.friendly_name}/set",
+                payload=json.dumps({"periodicPowerAndEnergyReports": 600}),
+            )
+            sleep(2)
+        except Exception as e:
+            logger.debug(f"Could not set periodicPowerAndEnergyReports for {device.friendly_name}: {e}")
 
     logger.info(f"Starting Update for {device.friendly_name}")
     client.subscribe(f"zigbee2mqtt/{device.friendly_name}")
@@ -518,7 +579,18 @@ client.loop_start()
 if not init_done_event.wait(timeout=60):
     logger.warning("Initialization timed out. Some devices might not have responded.")
 
-logger.info("Finished initialization")
+logger.info("Finished initialization. Passive listening for 30s before checking for available updates...")
+sleep(30)
+if currently_updating:
+    logger.info(f"Active update detected on startup for {currently_updating}. Suppressing update checks.")
+else:
+    logger.info("No active updates running. Checking device update availability sequentially...")
+    for dev in list(otadict.values()):
+        if currently_updating:
+            break
+        if dev.supports_ota and not dev.checked_for_update and not dev.update_available:
+            check_for_update(client, dev)
+            sleep(1)
 
 try:
     while True:
@@ -547,11 +619,14 @@ try:
             continue
 
         # Strictly respect the limit
+        if time.time() < cooldown_until:
+            sleep(1)
+            continue
+
         current_count = len(currently_updating)
         if updateable and current_count < MAX_CONCURRENT_UPDATES:
             device = updateable.pop(0)
             start_update(client, device)
-            sleep(30)
         elif updateable and current_count >= MAX_CONCURRENT_UPDATES:
             logger.debug(
                 f"Update queue full ({current_count}/{MAX_CONCURRENT_UPDATES}). Waiting..."
