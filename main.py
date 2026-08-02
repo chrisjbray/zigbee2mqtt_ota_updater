@@ -137,12 +137,10 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe("zigbee2mqtt/bridge/response/device/ota_update/check")
         client.subscribe("zigbee2mqtt/bridge/response/device/ota_update/update")
         client.subscribe("zigbee2mqtt/+")
-        # Ensure we're subscribed to all devices we already know about
-        for dev in otadict.values():
-            if dev.updating:
-                topic = f"zigbee2mqtt/{dev.friendly_name}"
-                client.subscribe(topic)
-                logger.info(f"Subscribed to {topic} on reconnect.")
+        # zigbee2mqtt/+ above already covers every device's topic (no friendly_name
+        # contains "/") - per-device subscribe() calls were redundant and, since they
+        # ran synchronously from inside on_message elsewhere, could self-deadlock
+        # paho-mqtt's network thread. Removed; do not re-add.
         # Request device list explicitly
         client.publish("zigbee2mqtt/bridge/request/devices", payload="")
     else:
@@ -288,10 +286,8 @@ def handle_devicelist(client, devicelist):
                         if dev.ieee_addr not in currently_updating:
                             currently_updating.append(dev.ieee_addr)
 
-                        topic = f"zigbee2mqtt/{dev.friendly_name}"
-                        client.subscribe(topic)
                         logger.info(
-                            f"  {dev.friendly_name} is already updating. Subscribed to {topic}"
+                            f"  {dev.friendly_name} is already updating (covered by zigbee2mqtt/+)"
                         )
                         dev.last_progress = time.time()
                     elif u_available:
@@ -393,11 +389,9 @@ def handle_otacheck(client, obj):
             device.updating = True
             if device.ieee_addr not in currently_updating:
                 currently_updating.append(device.ieee_addr)
-            topic = f"zigbee2mqtt/{device.friendly_name}"
-            client.subscribe(topic)
             device.last_progress = time.time()
             logger.info(
-                f"  {device.friendly_name} is already performing an operation. Subscribed to {topic}"
+                f"  {device.friendly_name} is already performing an operation (covered by zigbee2mqtt/+)"
             )
 
     if not sent_request:
@@ -497,7 +491,10 @@ def otacleanup(client, dev: OtaDevice):
     logger.info(
         f"Update for {dev.friendly_name} finished - {len(get_updateable_devices())} more updates to go. Network cooling down for 30s (non-blocking)..."
     )
-    client.unsubscribe(f"zigbee2mqtt/{dev.friendly_name}")
+    # No unsubscribe: zigbee2mqtt/+ (subscribed once in on_connect) is what's
+    # actually delivering these messages. Unsubscribing the exact-topic string
+    # here never touched that wildcard subscription, so this was a no-op that
+    # looked like cleanup - removed rather than leave misleading dead code.
 
 
 def check_for_update(client, device: OtaDevice):
@@ -532,7 +529,6 @@ def start_update(client, device: OtaDevice):
             logger.debug(f"Could not set periodicPowerAndEnergyReports for {device.friendly_name}: {e}")
 
     logger.info(f"Starting Update for {device.friendly_name}")
-    client.subscribe(f"zigbee2mqtt/{device.friendly_name}")
     client.publish(
         "zigbee2mqtt/bridge/request/device/ota_update/update",
         payload=json.dumps({"id": device.ieee_addr}),
