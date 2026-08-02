@@ -3,10 +3,12 @@ from datetime import datetime, timezone
 
 #!/usr/bin/env python3
 import argparse
+import fnmatch
 import json
 import logging
 import os
 import random
+import re
 import sys
 import time
 from dataclasses import dataclass, field
@@ -65,7 +67,34 @@ parser.add_argument(
     default=float(os.getenv("MAX_OFFLINE_HOURS", 1.0)),
     help="Max hours a device can be offline before skipping (default: 1.0 hour)",
 )
+parser.add_argument(
+    "--exclude",
+    action="append",
+    default=[],
+    metavar="PATTERN",
+    help="Skip devices matching PATTERN (friendly_name or ieee_addr). "
+    "Glob by default (e.g. 'Kitchen *'), or regex via i/<exp>/ "
+    "(case-insensitive). Repeatable.",
+)
 args = parser.parse_args()
+
+
+def _compile_exclude_matcher(pattern):
+    m = re.match(r"^i/(.*)/$", pattern)
+    if m:
+        rx = re.compile(m.group(1), re.IGNORECASE)
+        return rx.search
+    return lambda s: fnmatch.fnmatchcase(s, pattern)
+
+
+EXCLUDE_MATCHERS = [_compile_exclude_matcher(p) for p in args.exclude]
+
+
+def is_excluded(friendly_name, ieee_addr):
+    return any(
+        m(friendly_name) or m(ieee_addr) for m in EXCLUDE_MATCHERS
+    )
+
 
 from datetime import datetime, timezone
 
@@ -261,6 +290,10 @@ def handle_devicelist(client, devicelist):
                 update_available=raw_update_available,
                 manufacturer=device["definition"].get("vendor", ""),
             )
+
+            if is_excluded(dev.friendly_name, dev.ieee_addr):
+                logger.info(f"  {dev.friendly_name} excluded by --exclude, skipping")
+                continue
 
             if dev.supports_ota:
                 # Detect existing update state FIRST, straight from data z2m
