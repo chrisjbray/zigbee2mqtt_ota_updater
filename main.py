@@ -98,7 +98,13 @@ def is_excluded(friendly_name, ieee_addr):
 
 from datetime import datetime, timezone
 
-def is_online(ieee_addr):
+def is_online(ieee_addr, friendly_name=None):
+    # z2m's own availability feature (already enabled, config-driven timeouts
+    # per device type) is the correct signal - last_seen alone goes stale for
+    # quiet/sleepy end devices that are still perfectly online. Prefer it
+    # when we've received it; last_seen is only a startup-race fallback.
+    if friendly_name is not None and friendly_name in availability:
+        return availability[friendly_name]
     max_offline_seconds = args.max_offline_hours * 3600
     try:
         with open("/data/config/z2m/data/state.json") as f:
@@ -130,6 +136,7 @@ MQTT_PASSWORD = args.password
 MAX_CONCURRENT_UPDATES = args.max_concurrent
 
 # Global State
+availability = {}  # friendly_name -> bool, from zigbee2mqtt/+/availability
 otadict = {}
 currently_updating = []
 cooldown_until = 0
@@ -166,10 +173,13 @@ def on_connect(client, userdata, flags, rc):
         client.subscribe("zigbee2mqtt/bridge/response/device/ota_update/check")
         client.subscribe("zigbee2mqtt/bridge/response/device/ota_update/update")
         client.subscribe("zigbee2mqtt/+")
+        client.subscribe("zigbee2mqtt/+/availability")
         # zigbee2mqtt/+ above already covers every device's topic (no friendly_name
         # contains "/") - per-device subscribe() calls were redundant and, since they
         # ran synchronously from inside on_message elsewhere, could self-deadlock
         # paho-mqtt's network thread. Removed; do not re-add.
+        # /+/availability is a separate two-level subscribe since +/ only matches
+        # a single level and won't catch it.
         # Request device list explicitly
         client.publish("zigbee2mqtt/bridge/request/devices", payload="")
     else:
@@ -188,6 +198,10 @@ def on_message(client, userdata, msg):
         return
 
     lower_topic = msg.topic.lower()
+    if msg.topic.endswith("/availability") and "bridge" not in lower_topic:
+        device_fn = msg.topic.rsplit("/", 1)[0].split("/", 1)[1]
+        availability[device_fn] = obj.get("state") == "online"
+        return
     if lower_topic == "zigbee2mqtt/bridge/devices":
         if only_once:
             handle_devicelist(client, obj)
@@ -336,7 +350,7 @@ def handle_devicelist(client, devicelist):
                 # device risks an unfulfilled promise in z2m that can crash
                 # (and restart) the whole z2m process, dropping every other
                 # in-flight transfer with it.
-                if not already_handled and not is_online(dev.ieee_addr):
+                if not already_handled and not is_online(dev.ieee_addr, dev.friendly_name):
                     logger.warning(f"  Skipping {dev.friendly_name} (OFFLINE: last seen > {args.max_offline_hours}h ago)")
                     continue
 
