@@ -452,10 +452,16 @@ def handle_otasuccess(client, obj):
         ieee = data.get("id") if isinstance(data, dict) else None
         if not ieee:
             error_msg = str(obj.get("error", ""))
-            for marker in ["Update of '", "for '"]:
-                if marker in error_msg:
+            error_msg_lower = error_msg.lower()
+            # Case-insensitive: z2m's actual abort message is "OTA update of
+            # '<name>' failed (...)" - lowercase "update", which the old
+            # exact-case markers never matched, so this always fell through
+            # to "unknown" and the currently_updating-guess fallback below.
+            for marker in ["update of '", "for '"]:
+                idx = error_msg_lower.find(marker)
+                if idx != -1:
                     try:
-                        ieee = error_msg.split(marker)[1].split("'")[0]
+                        ieee = error_msg[idx + len(marker):].split("'")[0]
                         break
                     except IndexError:
                         pass
@@ -485,11 +491,19 @@ def handle_otasuccess(client, obj):
 
 
 def handle_failed_update(client, dev: OtaDevice):
-    global currently_updating
+    global currently_updating, cooldown_until
     logger.warning(f"Update failed for {dev.friendly_name}")
     dev.updating = False
     if dev.ieee_addr in currently_updating:
         currently_updating.remove(dev.ieee_addr)
+
+    # z2m's own OTA session for this device doesn't release immediately after
+    # an abort - observed holding "already in progress" for ~39s straight,
+    # long enough to burn all 25 retries on instant guaranteed rejections
+    # before the device ever got a real retry attempt. Same 30s window as the
+    # success-path cooldown below - same underlying z2m session-release delay
+    # either way, no evidence a shorter number is enough.
+    cooldown_until = time.time() + 30
 
     if dev.retries < args.retries:
         dev.retries += 1
