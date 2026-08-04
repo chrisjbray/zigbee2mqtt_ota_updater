@@ -157,6 +157,8 @@ class OtaDevice:
     updating: bool = False
     last_progress: float = 0
     retries: int = 0
+    retry_not_before: float = 0
+    last_completed_at: float = 0
     failed: bool = False
     last_state: str = 'unknown'
     manufacturer: str = ""
@@ -430,16 +432,28 @@ def handle_otacheck(client, obj):
     else:
         error_msg = obj.get("error", "Unknown error")
         logger.warning(f"  {progress} {device.friendly_name}: {error_msg}")
-        # If it's already in progress, mark it as available/updating
+        # If it's already in progress, mark it as available/updating - but not
+        # if we know this device finished within the last 30s. otacleanup()'s
+        # own confirmatory check (below) can itself bounce with this same
+        # "already in progress" error while z2m is still releasing its OTA
+        # session (same release-lag as the retry-storm fix above) - without
+        # this guard, that bounce gets misread as "still updating", which
+        # re-triggers otacleanup() on the next idle message, which fires
+        # another confirmatory check, looping until the session finally clears.
         if "in progress" in error_msg.lower():
-            device.update_available = True
-            device.updating = True
-            if device.ieee_addr not in currently_updating:
-                currently_updating.append(device.ieee_addr)
-            device.last_progress = time.time()
-            logger.info(
-                f"  {device.friendly_name} is already performing an operation (covered by zigbee2mqtt/+)"
-            )
+            if time.time() - device.last_completed_at < 30:
+                logger.debug(
+                    f"  {device.friendly_name}: ignoring stale 'already in progress' within 30s of its own completion"
+                )
+            else:
+                device.update_available = True
+                device.updating = True
+                if device.ieee_addr not in currently_updating:
+                    currently_updating.append(device.ieee_addr)
+                device.last_progress = time.time()
+                logger.info(
+                    f"  {device.friendly_name} is already performing an operation (covered by zigbee2mqtt/+)"
+                )
 
     if not sent_request:
         init_done_event.set()
@@ -505,6 +519,14 @@ def handle_failed_update(client, dev: OtaDevice):
     # either way, no evidence a shorter number is enough.
     cooldown_until = time.time() + 30
 
+    # Per-device floor, independent of the network-wide cooldown above (which
+    # is really about z2m's own OTA-session release delay) - always wait at
+    # least 5s before this specific device's next retry, whatever cooldown_until
+    # happens to be. Non-blocking: a timestamp checked by get_updateable_devices(),
+    # not a sleep() - this runs on paho's network thread via on_message and must
+    # not block it.
+    dev.retry_not_before = time.time() + 5
+
     if dev.retries < args.retries:
         dev.retries += 1
         logger.info(
@@ -517,10 +539,14 @@ def handle_failed_update(client, dev: OtaDevice):
 
 
 def get_updateable_devices():
+    now = time.time()
     return [
         device
         for device in otadict.values()
-        if device.update_available and not device.updating and not device.failed
+        if device.update_available
+        and not device.updating
+        and not device.failed
+        and now >= device.retry_not_before
     ]
 
 
@@ -528,6 +554,7 @@ def otacleanup(client, dev: OtaDevice):
     global currently_updating
     dev.updating = False
     dev.update_available = False
+    dev.last_completed_at = time.time()
     if dev.ieee_addr in currently_updating:
         currently_updating.remove(dev.ieee_addr)
     try:
