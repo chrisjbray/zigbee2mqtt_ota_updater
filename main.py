@@ -559,12 +559,45 @@ def otacleanup(client, dev: OtaDevice):
         currently_updating.remove(dev.ieee_addr)
     try:
         if dev.is_inovelli:
+            # z2m's own OTA extension force-clears the device's "configured"
+            # meta flag and re-interviews/re-configures ~5s after every
+            # firmware update (otaUpdate.js), which resets activePower and
+            # currentSummDelivered reporting back to stock (change=1/change=0)
+            # regardless of anything this script does. Re-push the tuned
+            # values here (this runs minutes after that reset, well clear of
+            # it) so OTA cycles don't silently undo the mesh-quieting work -
+            # see /data/local/bin/claude/tune_inovelli_reporting.py, which is
+            # the source of truth for these numbers.
+            client.publish(
+                "zigbee2mqtt/bridge/request/device/configure_reporting",
+                payload=json.dumps({
+                    "id": dev.friendly_name, "endpoint": 1,
+                    "cluster": "haElectricalMeasurement", "attribute": "activePower",
+                    "minimum_report_interval": 15, "maximum_report_interval": 3600,
+                    "reportable_change": 3,
+                }),
+            )
+            sleep(1)
+            client.publish(
+                "zigbee2mqtt/bridge/request/device/configure_reporting",
+                payload=json.dumps({
+                    "id": dev.friendly_name, "endpoint": 1,
+                    "cluster": "seMetering", "attribute": "currentSummDelivered",
+                    "minimum_report_interval": 15, "maximum_report_interval": 3600,
+                    "reportable_change": 1,
+                }),
+            )
+            sleep(1)
+
+            # 300 matches the tuned steady-state value - restoring the old
+            # stock 15 here would also silently undo the tuning on every
+            # OTA cycle.
             logger.info(
-                f"Post-update: Restoring periodicPowerAndEnergyReports=15 for {dev.friendly_name}..."
+                f"Post-update: Restoring periodicPowerAndEnergyReports=300 for {dev.friendly_name}..."
             )
             client.publish(
                 f"zigbee2mqtt/{dev.friendly_name}/set",
-                payload=json.dumps({"periodicPowerAndEnergyReports": 15}),
+                payload=json.dumps({"periodicPowerAndEnergyReports": 300}),
             )
             sleep(2)
         client.publish(
