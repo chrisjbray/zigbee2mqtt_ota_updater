@@ -529,6 +529,20 @@ def handle_otasuccess(client, obj):
 
 def handle_failed_update(client, dev: OtaDevice):
     global currently_updating, cooldown_until
+    if not dev.updating:
+        # Already handled - the two callers (watchdog timeout in the main
+        # loop, and an async error response in handle_otasuccess) can race:
+        # the watchdog fires first, clears updating/currently_updating and
+        # starts a real retry, and THEN the original (delayed) abort
+        # response for the first attempt arrives - z2m has been observed
+        # holding a session open for ~39s post-abort before surfacing the
+        # error, well past the watchdog's ability to tell the two apart.
+        # Without this guard that stale response would rip updating=False
+        # out from under the retry that's genuinely in flight, double-count
+        # the failure against --retries, and desync currently_updating from
+        # what z2m is actually doing.
+        logger.debug(f"Ignoring stale failure report for {dev.friendly_name} (not currently updating)")
+        return
     logger.warning(f"Update failed for {dev.friendly_name}")
     dev.updating = False
     if dev.ieee_addr in currently_updating:
