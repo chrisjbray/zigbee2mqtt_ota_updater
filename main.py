@@ -745,6 +745,16 @@ for dev in list(otadict.values()):
     if dev.supports_ota and not dev.checked_for_update and not dev.update_available:
         pending_checks.append(dev.ieee_addr)
 
+if args.shuffle:
+    # --shuffle only randomized the post-check "updateable" list further
+    # down, but check ORDER is what actually determines who gets serviced
+    # first each cycle - it's FIFO here, in z2m's stable device-list order.
+    # With ~76 devices and a 12h cycle only getting through a handful of
+    # checks, that meant the same devices at the head of z2m's list got
+    # checked every single run and devices further down could go unchecked
+    # across many restarts. Shuffle the check order too.
+    random.shuffle(pending_checks)
+
 try:
     while True:
         if not client.is_connected():
