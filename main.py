@@ -570,6 +570,16 @@ def get_updateable_devices():
         and not device.updating
         and not device.failed
         and now >= device.retry_not_before
+        # is_online() is only ever consulted once, at first-sight in
+        # handle_devicelist - a device that was online then and dies later
+        # would otherwise get retried against a dead radio for the full
+        # --retries budget, and each failure sets the *global* cooldown,
+        # stalling every other device's queue too. availability is kept live
+        # by the network thread the whole time this script runs, so use it
+        # here instead of querying anything fresh. Default True: a device
+        # this script has never received an availability message for yet
+        # (e.g. availability topic not retained) shouldn't be blocked.
+        and availability.get(device.friendly_name, True)
     ]
 
 
