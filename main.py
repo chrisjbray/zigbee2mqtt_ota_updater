@@ -721,15 +721,18 @@ if not init_done_event.wait(timeout=60):
 logger.info("Finished initialization. Passive listening for 30s before checking for available updates...")
 sleep(30)
 if currently_updating:
-    logger.info(f"Active update detected on startup for {currently_updating}. Suppressing update checks.")
-else:
-    logger.info("No active updates running. Checking device update availability sequentially...")
-    for dev in list(otadict.values()):
-        if currently_updating:
-            break
-        if dev.supports_ota and not dev.checked_for_update and not dev.update_available:
-            check_for_update(client, dev)
-            sleep(1)
+    logger.info(f"Active update detected on startup for {currently_updating}.")
+logger.info("Queuing device update checks...")
+# Queue every device unconditionally, even if currently_updating is non-empty -
+# check_for_update() and the pending_checks drain below both already defer while
+# currently_updating is non-empty, so there's nothing to gain by skipping this
+# here. The old version only queued when currently_updating was empty at this
+# exact moment, which meant a 12h-wrapper restart landing mid-transfer (the
+# common case, not the rare one) silently queued nothing for the entire next
+# cycle - every device sat at update_available=False until the next restart.
+for dev in list(otadict.values()):
+    if dev.supports_ota and not dev.checked_for_update and not dev.update_available:
+        pending_checks.append(dev.ieee_addr)
 
 try:
     while True:
@@ -756,7 +759,7 @@ try:
         if pending_checks and not currently_updating:
             ieee = pending_checks.pop(0)
             dev = otadict.get(ieee)
-            if dev:
+            if dev and not dev.checked_for_update:
                 check_for_update(client, dev)
 
         updateable = get_updateable_devices()
