@@ -377,16 +377,17 @@ def handle_devicelist(client, devicelist):
                     logger.info(
                         f"  {dev.friendly_name} supports OTA Updates (added to queue)"
                     )
-                    if init_done_event.is_set():
-                        # Startup's one-time sequential check loop (in
-                        # __main__) has already run - this device joined the
-                        # mesh after that, so queue it for the main loop to
-                        # check instead of leaving update_available=False
-                        # forever.
-                        logger.info(
-                            f"  {dev.friendly_name} joined after startup, queued for OTA check"
-                        )
-                        pending_checks.append(dev.ieee_addr)
+                    # Queue unconditionally rather than gating on
+                    # init_done_event.is_set() - that event is only set at the
+                    # tail of THIS function (below), so during the very call
+                    # that's processing the first-ever device list, it's still
+                    # False for every device in it. If that first response is
+                    # slow enough to blow past __main__'s 60s wait, this was
+                    # the only path that would ever queue those devices - and
+                    # it never fired for them. otadict's per-device dedup
+                    # (top of this loop) already guarantees this only runs
+                    # once per device, so there's no double-queue risk here.
+                    pending_checks.append(dev.ieee_addr)
 
     if not init_done_event.is_set():
         if num_total == 0 or not sent_request:
