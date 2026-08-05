@@ -204,29 +204,39 @@ def on_message(client, userdata, msg):
         logger.debug(f"Could not decode message on topic {msg.topic}: {e}")
         return
 
-    lower_topic = msg.topic.lower()
-    if msg.topic.endswith("/availability") and "bridge" not in lower_topic:
-        device_fn = msg.topic.rsplit("/", 1)[0].split("/", 1)[1]
-        availability[device_fn] = obj.get("state") == "online"
-        return
-    if lower_topic == "zigbee2mqtt/bridge/devices":
-        # z2m republishes this (retained) every time a device joins/leaves,
-        # not just once at startup - handle_devicelist is idempotent per
-        # device now, so call it every time to pick up devices that join
-        # mid-run instead of only the first message.
-        handle_devicelist(client, obj)
-    elif lower_topic == "zigbee2mqtt/bridge/response/device/ota_update/check":
-        if not nicer_output_flag:
-            logger.info("Fetching update responses:")
-            nicer_output_flag = True
-        handle_otacheck(client, obj)
-    elif lower_topic == "zigbee2mqtt/bridge/response/device/ota_update/update":
-        handle_otasuccess(client, obj)
-    elif msg.topic.startswith("zigbee2mqtt/") and "bridge" not in lower_topic:
-        if "update" in obj:
-            logger.debug(f"Received update message for {msg.topic}: {obj['update']}")
-            device_fn = msg.topic.split("/", 1)[1]
-            update_progress(device_fn, obj["update"])
+    try:
+        lower_topic = msg.topic.lower()
+        if msg.topic.endswith("/availability") and "bridge" not in lower_topic:
+            device_fn = msg.topic.rsplit("/", 1)[0].split("/", 1)[1]
+            availability[device_fn] = obj.get("state") == "online"
+            return
+        if lower_topic == "zigbee2mqtt/bridge/devices":
+            # z2m republishes this (retained) every time a device joins/leaves,
+            # not just once at startup - handle_devicelist is idempotent per
+            # device now, so call it every time to pick up devices that join
+            # mid-run instead of only the first message.
+            handle_devicelist(client, obj)
+        elif lower_topic == "zigbee2mqtt/bridge/response/device/ota_update/check":
+            if not nicer_output_flag:
+                logger.info("Fetching update responses:")
+                nicer_output_flag = True
+            handle_otacheck(client, obj)
+        elif lower_topic == "zigbee2mqtt/bridge/response/device/ota_update/update":
+            handle_otasuccess(client, obj)
+        elif msg.topic.startswith("zigbee2mqtt/") and "bridge" not in lower_topic:
+            if "update" in obj:
+                logger.debug(f"Received update message for {msg.topic}: {obj['update']}")
+                device_fn = msg.topic.split("/", 1)[1]
+                update_progress(device_fn, obj["update"])
+    except Exception:
+        # paho's network thread dies silently on an uncaught callback
+        # exception - client.is_connected() keeps reporting True, so the
+        # main loop never notices and just spins doing nothing for up to
+        # 12h. Every handler above runs from here, so one blanket guard
+        # covers all of them (e.g. float(progress) in update_progress on a
+        # non-numeric payload, or a KeyError from an unexpected device
+        # shape) instead of chasing each one individually.
+        logger.exception(f"Unhandled error processing message on {msg.topic}")
 
 
 def update_progress(device_fn, update_data):
@@ -579,7 +589,15 @@ def get_updateable_devices():
     now = time.time()
     return [
         device
-        for device in otadict.values()
+        # list() snapshot: this runs on the main thread every loop tick
+        # while the network thread inserts new keys into otadict
+        # (handle_devicelist, on every bridge/devices republish) with no
+        # lock between them - iterating the live view risked "dictionary
+        # changed size during iteration" killing the main loop outright
+        # (only KeyboardInterrupt is caught around it), and a crash mid-
+        # transfer is exactly what strands devices per the startup-sweep
+        # bug fixed earlier this session.
+        for device in list(otadict.values())
         if device.update_available
         and not device.updating
         and not device.failed
