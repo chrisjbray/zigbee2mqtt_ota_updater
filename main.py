@@ -143,8 +143,13 @@ cooldown_until = 0
 sent_request = []
 init_done_event = Event()
 nicer_output_flag = False
-only_once = True
 num_total = 0
+# ieee_addrs of devices discovered after startup (device joined the mesh
+# while this process was running) that still need their first OTA check.
+# Drained one-at-a-time by the main loop so check_for_update's client.publish
+# never runs on paho's network thread (on_message) - see the on_connect
+# comment above about that deadlock risk.
+pending_checks = []
 
 
 @dataclass
@@ -189,7 +194,7 @@ def on_connect(client, userdata, flags, rc):
 
 
 def on_message(client, userdata, msg):
-    global nicer_output_flag, only_once, otadict
+    global nicer_output_flag, otadict
     try:
         message = (msg.payload).decode("utf-8")
         if not message:
@@ -205,9 +210,11 @@ def on_message(client, userdata, msg):
         availability[device_fn] = obj.get("state") == "online"
         return
     if lower_topic == "zigbee2mqtt/bridge/devices":
-        if only_once:
-            handle_devicelist(client, obj)
-            only_once = False
+        # z2m republishes this (retained) every time a device joins/leaves,
+        # not just once at startup - handle_devicelist is idempotent per
+        # device now, so call it every time to pick up devices that join
+        # mid-run instead of only the first message.
+        handle_devicelist(client, obj)
     elif lower_topic == "zigbee2mqtt/bridge/response/device/ota_update/check":
         if not nicer_output_flag:
             logger.info("Fetching update responses:")
@@ -289,10 +296,14 @@ def update_progress(device_fn, update_data):
 
 
 def handle_devicelist(client, devicelist):
-    logger.info("Looking for supported devices:")
-    global otadict, num_total, currently_updating
+    global otadict, num_total, currently_updating, pending_checks
     for device in devicelist:
         if device.get("definition"):
+            if device.get("ieee_address") in otadict:
+                # Already tracked from an earlier call - skip. Rebuilding it
+                # here would clobber in-flight state (updating/retries/
+                # last_progress) for a device mid-update.
+                continue
             # Initial detection of update available from raw device data
             raw_update_available = (
                 device.get("update_available") is True
@@ -366,11 +377,22 @@ def handle_devicelist(client, devicelist):
                     logger.info(
                         f"  {dev.friendly_name} supports OTA Updates (added to queue)"
                     )
+                    if init_done_event.is_set():
+                        # Startup's one-time sequential check loop (in
+                        # __main__) has already run - this device joined the
+                        # mesh after that, so queue it for the main loop to
+                        # check instead of leaving update_available=False
+                        # forever.
+                        logger.info(
+                            f"  {dev.friendly_name} joined after startup, queued for OTA check"
+                        )
+                        pending_checks.append(dev.ieee_addr)
 
-    if num_total == 0 or not sent_request:
-        logger.info("No OTA-supported devices found (or all already checked).")
-        if not sent_request:
-            init_done_event.set()
+    if not init_done_event.is_set():
+        if num_total == 0 or not sent_request:
+            logger.info("No OTA-supported devices found (or all already checked).")
+            if not sent_request:
+                init_done_event.set()
 
 
 def handle_otacheck(client, obj):
@@ -725,6 +747,17 @@ try:
                     f"Timeout updating {dev.friendly_name} (no progress for {args.timeout}s)"
                 )
                 handle_failed_update(client, dev)
+
+        # Drain one queued check per loop tick for devices that joined the
+        # mesh after startup. Gate on currently_updating ourselves (rather
+        # than just calling check_for_update, which also no-ops in that
+        # case) so a device isn't popped and silently dropped while another
+        # update is in flight - it stays queued until it's actually sent.
+        if pending_checks and not currently_updating:
+            ieee = pending_checks.pop(0)
+            dev = otadict.get(ieee)
+            if dev:
+                check_for_update(client, dev)
 
         updateable = get_updateable_devices()
         if args.shuffle:
