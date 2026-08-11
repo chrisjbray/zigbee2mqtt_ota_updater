@@ -13,3 +13,6 @@
 - [x] Add post-update ZCL re-configuration and cache refresh in otacleanup()
 - [x] Make main loop run continuously as a daemon instead of exiting when queue is temporarily empty
 - [x] Subscribe to wildcard device topic zigbee2mqtt/+ to capture all device progress updates
+- [x] Apply `black` to `main.py`. Despite `AGENTS.md` requiring it, the file had
+      never actually been formatted - it was not clean at any width from 79 to
+      160. Now clean at the default 88, and `AGENTS.md` states that width

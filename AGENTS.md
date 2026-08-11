@@ -4,7 +4,10 @@ Automate and track OTA updates for all supported devices in Zigbee2MQTT.
 
 ## Development Rules
 
-- **Formatting:** Use `black` for all Python code formatting.
+- **Formatting:** Use `black` at its default 88 columns. There is no
+  `pyproject.toml`, so the width is recorded here deliberately: the sibling
+  `zigbee2mqtt_importer` repo is formatted at `-l 110`, and leaving the width
+  unstated is what let three of its files drift to a second width.
 - **Environment:** Use the shared virtual environment located in the parent directory: `../venv/`.
 - **Commits:** ALWAYS ask for permission before committing if the repository root is the home directory.
 - **Tracking:** Keep the `TODO.md` file updated with progress and remaining tasks.

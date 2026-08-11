@@ -1,4 +1,3 @@
-
 from datetime import datetime, timezone
 
 #!/usr/bin/env python3
@@ -91,12 +90,11 @@ EXCLUDE_MATCHERS = [_compile_exclude_matcher(p) for p in args.exclude]
 
 
 def is_excluded(friendly_name, ieee_addr):
-    return any(
-        m(friendly_name) or m(ieee_addr) for m in EXCLUDE_MATCHERS
-    )
+    return any(m(friendly_name) or m(ieee_addr) for m in EXCLUDE_MATCHERS)
 
 
 from datetime import datetime, timezone
+
 
 def is_online(ieee_addr, friendly_name=None):
     # z2m's own availability feature (already enabled, config-driven timeouts
@@ -165,7 +163,7 @@ class OtaDevice:
     retry_not_before: float = 0
     last_completed_at: float = 0
     failed: bool = False
-    last_state: str = 'unknown'
+    last_state: str = "unknown"
     manufacturer: str = ""
 
     @property
@@ -225,7 +223,9 @@ def on_message(client, userdata, msg):
             handle_otasuccess(client, obj)
         elif msg.topic.startswith("zigbee2mqtt/") and "bridge" not in lower_topic:
             if "update" in obj:
-                logger.debug(f"Received update message for {msg.topic}: {obj['update']}")
+                logger.debug(
+                    f"Received update message for {msg.topic}: {obj['update']}"
+                )
                 device_fn = msg.topic.split("/", 1)[1]
                 update_progress(device_fn, obj["update"])
     except Exception:
@@ -265,7 +265,14 @@ def update_progress(device_fn, update_data):
             dev = res[0]
             dev.last_progress = time.time()
             current_p = float(progress)
-            if abs(current_p - dev.last_progress_val if hasattr(dev, "last_progress_val") else -1) >= 0.01:
+            if (
+                abs(
+                    current_p - dev.last_progress_val
+                    if hasattr(dev, "last_progress_val")
+                    else -1
+                )
+                >= 0.01
+            ):
                 dev.last_progress_val = current_p
                 try:
                     msg = f"Updating {device_fn} - {current_p:6.2f}%"
@@ -373,8 +380,12 @@ def handle_devicelist(client, devicelist):
                 # device risks an unfulfilled promise in z2m that can crash
                 # (and restart) the whole z2m process, dropping every other
                 # in-flight transfer with it.
-                if not already_handled and not is_online(dev.ieee_addr, dev.friendly_name):
-                    logger.warning(f"  Skipping {dev.friendly_name} (OFFLINE: last seen > {args.max_offline_hours}h ago)")
+                if not already_handled and not is_online(
+                    dev.ieee_addr, dev.friendly_name
+                ):
+                    logger.warning(
+                        f"  Skipping {dev.friendly_name} (OFFLINE: last seen > {args.max_offline_hours}h ago)"
+                    )
                     continue
 
                 otadict[dev.ieee_addr] = dev
@@ -508,20 +519,26 @@ def handle_otasuccess(client, obj):
                 idx = error_msg_lower.find(marker)
                 if idx != -1:
                     try:
-                        ieee = error_msg[idx + len(marker):].split("'")[0]
+                        ieee = error_msg[idx + len(marker) :].split("'")[0]
                         break
                     except IndexError:
                         pass
         logger.error(f"Update error for {ieee or 'unknown'}: {obj.get('error')}")
         dev = None
         if ieee:
-            res = [d for d in otadict.values() if d.friendly_name == ieee or d.ieee_addr == ieee]
+            res = [
+                d
+                for d in otadict.values()
+                if d.friendly_name == ieee or d.ieee_addr == ieee
+            ]
             if res:
                 dev = res[0]
         if dev:
             handle_failed_update(client, dev)
         elif currently_updating:
-            logger.warning("Unmatched update error, clearing oldest active updating device.")
+            logger.warning(
+                "Unmatched update error, clearing oldest active updating device."
+            )
             oldest_ieee = currently_updating[0]
             if oldest_ieee in otadict:
                 handle_failed_update(client, otadict[oldest_ieee])
@@ -551,7 +568,9 @@ def handle_failed_update(client, dev: OtaDevice):
         # out from under the retry that's genuinely in flight, double-count
         # the failure against --retries, and desync currently_updating from
         # what z2m is actually doing.
-        logger.debug(f"Ignoring stale failure report for {dev.friendly_name} (not currently updating)")
+        logger.debug(
+            f"Ignoring stale failure report for {dev.friendly_name} (not currently updating)"
+        )
         return
     logger.warning(f"Update failed for {dev.friendly_name}")
     dev.updating = False
@@ -635,22 +654,32 @@ def otacleanup(client, dev: OtaDevice):
             # the source of truth for these numbers.
             client.publish(
                 "zigbee2mqtt/bridge/request/device/configure_reporting",
-                payload=json.dumps({
-                    "id": dev.friendly_name, "endpoint": 1,
-                    "cluster": "haElectricalMeasurement", "attribute": "activePower",
-                    "minimum_report_interval": 15, "maximum_report_interval": 3600,
-                    "reportable_change": 3,
-                }),
+                payload=json.dumps(
+                    {
+                        "id": dev.friendly_name,
+                        "endpoint": 1,
+                        "cluster": "haElectricalMeasurement",
+                        "attribute": "activePower",
+                        "minimum_report_interval": 15,
+                        "maximum_report_interval": 3600,
+                        "reportable_change": 3,
+                    }
+                ),
             )
             sleep(1)
             client.publish(
                 "zigbee2mqtt/bridge/request/device/configure_reporting",
-                payload=json.dumps({
-                    "id": dev.friendly_name, "endpoint": 1,
-                    "cluster": "seMetering", "attribute": "currentSummDelivered",
-                    "minimum_report_interval": 15, "maximum_report_interval": 3600,
-                    "reportable_change": 1,
-                }),
+                payload=json.dumps(
+                    {
+                        "id": dev.friendly_name,
+                        "endpoint": 1,
+                        "cluster": "seMetering",
+                        "attribute": "currentSummDelivered",
+                        "minimum_report_interval": 15,
+                        "maximum_report_interval": 3600,
+                        "reportable_change": 1,
+                    }
+                ),
             )
             sleep(1)
 
@@ -670,7 +699,9 @@ def otacleanup(client, dev: OtaDevice):
             payload=json.dumps({"id": dev.ieee_addr}),
         )
     except Exception as e:
-        logger.warning(f"Failed post-update restore/refresh for {dev.friendly_name}: {e}")
+        logger.warning(
+            f"Failed post-update restore/refresh for {dev.friendly_name}: {e}"
+        )
 
     global cooldown_until
     cooldown_until = time.time() + 30
@@ -686,7 +717,9 @@ def otacleanup(client, dev: OtaDevice):
 def check_for_update(client, device: OtaDevice):
     global sent_request
     if currently_updating:
-        logger.debug(f"Skipping update check for {device.friendly_name} while another device is updating.")
+        logger.debug(
+            f"Skipping update check for {device.friendly_name} while another device is updating."
+        )
         return
     client.publish(
         "zigbee2mqtt/bridge/request/device/ota_update/check",
@@ -704,7 +737,9 @@ def start_update(client, device: OtaDevice):
         return
 
     if device.is_inovelli:
-        logger.info(f"Pre-flight: Setting periodicPowerAndEnergyReports=600 for {device.friendly_name}")
+        logger.info(
+            f"Pre-flight: Setting periodicPowerAndEnergyReports=600 for {device.friendly_name}"
+        )
         try:
             client.publish(
                 f"zigbee2mqtt/{device.friendly_name}/set",
@@ -712,7 +747,9 @@ def start_update(client, device: OtaDevice):
             )
             sleep(2)
         except Exception as e:
-            logger.debug(f"Could not set periodicPowerAndEnergyReports for {device.friendly_name}: {e}")
+            logger.debug(
+                f"Could not set periodicPowerAndEnergyReports for {device.friendly_name}: {e}"
+            )
 
     logger.info(f"Starting Update for {device.friendly_name}")
     client.publish(
@@ -761,7 +798,9 @@ client.loop_start()
 if not init_done_event.wait(timeout=60):
     logger.warning("Initialization timed out. Some devices might not have responded.")
 
-logger.info("Finished initialization. Passive listening for 30s before checking for available updates...")
+logger.info(
+    "Finished initialization. Passive listening for 30s before checking for available updates..."
+)
 sleep(30)
 if currently_updating:
     logger.info(f"Active update detected on startup for {currently_updating}.")
@@ -820,7 +859,9 @@ try:
             random.shuffle(updateable)
 
         if init_done_event.is_set() and not updateable and not currently_updating:
-            logger.info("No active updates in queue. Waiting 30s for next available device...")
+            logger.info(
+                "No active updates in queue. Waiting 30s for next available device..."
+            )
             sleep(30)
             continue
 
